@@ -197,7 +197,7 @@ if __name__ == "__main__":
                             current_frame, prev_recon_frame, enc_hidden_state
                         )
 
-                    received_features, _ = pipeline.channel(received_features)
+                    received_features, _ = pipeline.channel(features_to_transmit)
                     recon_frame, dec_hidden_state = pipeline.receiver(
                         received_features, dec_hidden_state
                     )
@@ -207,13 +207,13 @@ if __name__ == "__main__":
 
                     val_psnr_total += calculate_psnr(
                         current_frame, recon_frame, data_range=1.0
-                    ).item()
+                    )
                     val_ssim_total += calculate_ssim(
                         current_frame, recon_frame, data_range=1.0
-                    ).item()
+                    )
                     val_ms_ssim_total += calculate_ms_ssim(
                         current_frame, recon_frame, data_range=1.0
-                    ).item()
+                    )
                     val_lpips_total += calculate_lpips(current_frame, recon_frame)
                     num_val_frames += B
 
