@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
+from loguru import logger
 from PIL import Image
 from torchvision import transforms
 
@@ -40,13 +41,13 @@ class BasePipeline(nn.Module):
         self._fid_calculator.reset()
         self._fid_calculated = False
 
-    def output_statistics(self):
+    def output_statistics(self) -> Dict[str, float]:
         """Outputs the collected statistics."""
         if not self._statistics:
-            print("No statistics collected yet.")
+            logger.warning("No statistics collected yet.")
             return
 
-        print("\n--- Semantic Communication Pipeline Statistics ---")
+        logger.info("\n--- Semantic Communication Pipeline Statistics ---")
 
         total_images = len(self._statistics)
         avg_timings: Dict[str, float] = {
@@ -81,22 +82,22 @@ class BasePipeline(nn.Module):
         for k in avg_metrics:
             avg_metrics[k] /= total_images
 
-        print("\nAverage Timings (seconds):")
+        logger.info("\nAverage Timings (seconds):")
         for k, v in avg_timings.items():
-            print(f"  {k}: {v:.6f}")
+            logger.info(f"  {k}: {v:.6f}")
 
-        print("\nAverage Size Info:")
+        logger.info("\nAverage Size Info:")
         for k, v in avg_size_info.items():
-            print(f"  {k}: {v:.2f}")
+            logger.info(f"  {k}: {v:.2f}")
 
-        print("\nAverage Metrics:")
-        print(f"  PSNR: {avg_metrics['psnr']:.4f}")
-        print(f"  SSIM: {avg_metrics['ssim']:.4f}")
-        print(f"  MS-SSIM: {avg_metrics['ms_ssim']:.4f}")
-        print(f"  LPIPS: {avg_metrics['lpips']:.4f}")
-        print(f"  Compression Ratio: {avg_metrics['compression_ratio']:.2f}")
+        logger.info("\nAverage Metrics:")
+        logger.info(f"  PSNR: {avg_metrics['psnr']:.4f}")
+        logger.info(f"  SSIM: {avg_metrics['ssim']:.4f}")
+        logger.info(f"  MS-SSIM: {avg_metrics['ms_ssim']:.4f}")
+        logger.info(f"  LPIPS: {avg_metrics['lpips']:.4f}")
+        logger.info(f"  Compression Ratio: {avg_metrics['compression_ratio']:.2f}")
 
-        print("\nCalculating FID...")
+        logger.info("\nCalculating FID...")
         if (
             len(self._fid_calculator.real_features_list) >= self._min_fid_images
             and len(self._fid_calculator.fake_features_list) >= self._min_fid_images
@@ -106,18 +107,20 @@ class BasePipeline(nn.Module):
             if not self._fid_calculated:
                 try:
                     fid_score = self._fid_calculator.compute_fid()
-                    print(f"  FID: {fid_score:.4f}")
+                    avg_metrics["fid"] = fid_score
+                    logger.info(f"  FID: {fid_score:.4f}")
                     self._fid_calculated = True
                 except Exception as e:
-                    print(f"  FID calculation failed: {e}")
+                    logger.error(f"  FID calculation failed: {e}")
             else:
-                print("  FID already calculated.")
+                logger.info("  FID already calculated.")
         else:
-            print(
+            logger.info(
                 f"  FID requires at least {self._min_fid_images} images to calculate. Only {len(self._fid_calculator.real_features_list)} processed."
             )
 
-        print("\n--- End of Statistics ---")
+        logger.info("\n--- End of Statistics ---")
+        return avg_metrics
 
     def forward(self, input_data: Any) -> tuple[Any, dict]:
         """

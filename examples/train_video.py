@@ -81,12 +81,7 @@ class VideoDataset(Dataset):
 
 
 if __name__ == "__main__":
-    logger.add(
-        "outputs/{time:YYYY-MM-DD}_{time:HH-mm-ss}.log",
-        rotation="00:00",
-        retention=30,
-        level="INFO",
-    )
+    logger.add("outputs/{time:YYYY-MM-DD}_{time:HH-mm-ss}.log", level="INFO")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
@@ -119,7 +114,7 @@ if __name__ == "__main__":
     channel = IdealChannel().to(device)
     receiver = SimpleVideoDecoder(output_channels=3).to(device)
     pipeline = BasePipeline(transmitter, channel, receiver).to(device)
-    optimizer = torch.optim.Adam(pipeline.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(pipeline.parameters(), lr=1e-3)
 
     num_epochs = 10
 
