@@ -83,6 +83,8 @@ def calculate_psnr(
 ) -> float:
     img1, img2 = _prepare_tensors_for_metric(img1, img2, device, data_range=data_range)
     model = _get_metric_model("psnr", img1.device)
+    img1 = img1.to(torch.float32)
+    img2 = img2.to(torch.float32)
     return model(img1, img2).item()
 
 
@@ -94,6 +96,8 @@ def calculate_ssim(
 ) -> float:
     img1, img2 = _prepare_tensors_for_metric(img1, img2, device, data_range=data_range)
     model = _get_metric_model("ssim", img1.device)
+    img1 = img1.to(torch.float32)
+    img2 = img2.to(torch.float32)
     return model(img1, img2).item()
 
 
@@ -118,8 +122,14 @@ def calculate_ms_ssim(
             target_size=(target_h, target_w),
             data_range=data_range,
         )
+    else:
+        img1, img2 = _prepare_tensors_for_metric(
+            img1, img2, device, data_range=data_range
+        )
 
     model = _get_metric_model("ms_ssim", img1.device)
+    img1 = img1.to(torch.float32)
+    img2 = img2.to(torch.float32)
     return model(img1, img2).item()
 
 
@@ -131,6 +141,8 @@ def calculate_lpips(
 ) -> float:
     img1, img2 = _prepare_tensors_for_metric(img1, img2, device, data_range=1.0)
     model = _get_metric_model("lpips", img1.device, network=net)
+    img1 = img1.to(torch.float32)
+    img2 = img2.to(torch.float32)
     return model(img1, img2).item()
 
 
