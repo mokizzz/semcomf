@@ -122,6 +122,19 @@ class BasePipeline(nn.Module):
         logger.info("\n--- End of Statistics ---")
         return avg_metrics
 
+    def _calculate_total_elements_numel(self, data: Any) -> int:
+        """Recursively calculates the total number of elements in all tensors within a nested structure."""
+        total_elements = 0
+        if isinstance(data, torch.Tensor):
+            total_elements += data.numel()
+        elif isinstance(data, (list, tuple)):
+            for item in data:
+                total_elements += self._calculate_total_elements_numel(item)
+        elif isinstance(data, dict):
+            for value in data.values():
+                total_elements += self._calculate_total_elements_numel(value)
+        return total_elements
+
     def forward(self, input_data: Any) -> tuple[Any, dict]:
         """
         Passes input_data through the full semantic communication pipeline.
@@ -156,12 +169,13 @@ class BasePipeline(nn.Module):
         diagnostics["size_info"] = size_info
 
         # CBR
-        if orig_tensor_for_cbr is not None and isinstance(
-            data_after_channel, torch.Tensor
-        ):
+        if orig_tensor_for_cbr is not None:
             n = orig_tensor_for_cbr.numel()
-            k = data_after_channel.numel() / 2
-            diagnostics["size_info"]["cbr"] = k / n
+            k = self._calculate_total_elements_numel(data_after_channel) / 2
+            if n > 0:
+                diagnostics["size_info"]["cbr"] = k / n
+            else:
+                diagnostics["size_info"]["cbr"] = float("inf")
 
         # Receiver
         rx_start_time = time.time()
