@@ -213,21 +213,25 @@ class BasePipeline(nn.Module):
                     reconstructed_tensor_for_metrics
                 )
 
+            original_tensor_for_metrics_batched = torch.clamp(
+                original_tensor_for_metrics_batched, 0, 1
+            )
+            reconstructed_tensor_for_metrics_batched = torch.clamp(
+                reconstructed_tensor_for_metrics_batched, 0, 1
+            )
+
             per_image_metrics = {
                 "psnr": calculate_psnr(
                     original_tensor_for_metrics_batched,
                     reconstructed_tensor_for_metrics_batched,
-                    data_range=255.0,
                 ),
                 "ssim": calculate_ssim(
                     original_tensor_for_metrics_batched,
                     reconstructed_tensor_for_metrics_batched,
-                    data_range=255.0,
                 ),
                 "ms_ssim": calculate_ms_ssim(
                     original_tensor_for_metrics_batched,
                     reconstructed_tensor_for_metrics_batched,
-                    data_range=255.0,
                 ),
                 "lpips": calculate_lpips(
                     original_tensor_for_metrics_batched,
