@@ -260,9 +260,9 @@ class BasePipeline(nn.Module):
             )
             transmitted_size_bits = diagnostics["size_info"].get("total_bits", 0)
             if transmitted_size_bits > 0:
-                diagnostics["compression_ratio"] = (
+                diagnostics["compression_ratio"] = transmitted_size_bits / (
                     original_size_bytes * 8
-                ) / transmitted_size_bits
+                )
             else:
                 diagnostics["compression_ratio"] = float("inf")
 
