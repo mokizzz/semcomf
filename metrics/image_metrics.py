@@ -130,7 +130,11 @@ def calculate_ms_ssim(
     model = _get_metric_model("ms_ssim", img1.device)
     img1 = img1.to(torch.float32)
     img2 = img2.to(torch.float32)
-    return model(img1, img2).item()
+    try:
+        return model(img1, img2).item()
+    except RuntimeError as e:
+        print(f"Warning: MS-SSIM calculation failed due to input size. Returning NaN. Error: {e}")
+        return float('nan')
 
 
 def calculate_lpips(
