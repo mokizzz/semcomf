@@ -24,21 +24,27 @@ class BasePipeline(nn.Module):
     """
 
     def __init__(
-        self, transmitter: nn.Module, channel: BaseChannel, receiver: nn.Module
+        self,
+        transmitter: nn.Module,
+        channel: BaseChannel,
+        receiver: nn.Module,
+        enable_fid: bool = False,
     ):
         super().__init__()
         self.transmitter = transmitter
         self.channel = channel
         self.receiver = receiver
+        self.enable_fid = enable_fid
         self._statistics: List[Dict[str, Any]] = []
-        self._fid_calculator = FIDCalculator()
+        self._fid_calculator = FIDCalculator() if enable_fid else None
         self._fid_calculated = False
         self._min_fid_images = 2
 
     def reset_statistics(self):
         """Clears all collected statistics and resets the FID calculator."""
         self._statistics = []
-        self._fid_calculator.reset()
+        if self.enable_fid and self._fid_calculator is not None:
+            self._fid_calculator.reset()
         self._fid_calculated = False
 
     def output_statistics(self) -> Dict[str, float]:
@@ -97,27 +103,30 @@ class BasePipeline(nn.Module):
         logger.info(f"  LPIPS: {avg_metrics['lpips']:.4f}")
         logger.info(f"  Compression Ratio: {avg_metrics['compression_ratio']:.2f}")
 
-        logger.info("\nCalculating FID...")
-        if (
-            len(self._fid_calculator.real_features_list) >= self._min_fid_images
-            and len(self._fid_calculator.fake_features_list) >= self._min_fid_images
-            and len(self._fid_calculator.real_features_list)
-            == len(self._fid_calculator.fake_features_list)
-        ):
-            if not self._fid_calculated:
-                try:
-                    fid_score = self._fid_calculator.compute_fid()
-                    avg_metrics["fid"] = fid_score
-                    logger.info(f"  FID: {fid_score:.4f}")
-                    self._fid_calculated = True
-                except Exception as e:
-                    logger.error(f"  FID calculation failed: {e}")
+        if self.enable_fid and self._fid_calculator is not None:
+            logger.info("\nCalculating FID...")
+            if (
+                len(self._fid_calculator.real_features_list) >= self._min_fid_images
+                and len(self._fid_calculator.fake_features_list) >= self._min_fid_images
+                and len(self._fid_calculator.real_features_list)
+                == len(self._fid_calculator.fake_features_list)
+            ):
+                if not self._fid_calculated:
+                    try:
+                        fid_score = self._fid_calculator.compute_fid()
+                        avg_metrics["fid"] = fid_score
+                        logger.info(f"  FID: {fid_score:.4f}")
+                        self._fid_calculated = True
+                    except Exception as e:
+                        logger.error(f"  FID calculation failed: {e}")
+                else:
+                    logger.info("  FID already calculated.")
             else:
-                logger.info("  FID already calculated.")
+                logger.info(
+                    f"  FID requires at least {self._min_fid_images} images to calculate. Only {len(self._fid_calculator.real_features_list)} processed."
+                )
         else:
-            logger.info(
-                f"  FID requires at least {self._min_fid_images} images to calculate. Only {len(self._fid_calculator.real_features_list)} processed."
-            )
+            logger.info("\nFID calculation disabled (enable_fid=False)")
 
         logger.info("\n--- End of Statistics ---")
         return avg_metrics
@@ -149,12 +158,13 @@ class BasePipeline(nn.Module):
         """
         diagnostics = {"timings": {}, "size_info": {}}
 
-        # CBR (Channel Bandwidth Ratio) preparation
+        # CBR preparation - only in eval mode
         orig_tensor_for_cbr = None
-        if isinstance(input_data, torch.Tensor):
-            orig_tensor_for_cbr = input_data.detach().cpu()
-        elif isinstance(input_data, Image.Image):
-            orig_tensor_for_cbr = transforms.ToTensor()(input_data).cpu()
+        if not self.training:
+            if isinstance(input_data, torch.Tensor):
+                orig_tensor_for_cbr = input_data.detach().cpu()
+            elif isinstance(input_data, Image.Image):
+                orig_tensor_for_cbr = transforms.ToTensor()(input_data).cpu()
 
         # Transmitter
         tx_start_time = time.time()
@@ -168,7 +178,7 @@ class BasePipeline(nn.Module):
         diagnostics["timings"]["channel_total"] = time.time() - ch_start_time
         diagnostics["size_info"] = size_info
 
-        # CBR
+        # CBR calculation - only in eval mode
         if orig_tensor_for_cbr is not None:
             n = orig_tensor_for_cbr.numel()
             k = self._calculate_total_elements_numel(data_after_channel) / 2
@@ -189,91 +199,116 @@ class BasePipeline(nn.Module):
             + diagnostics["timings"]["receiver_total"]
         )
 
-        original_tensor_for_metrics = None
-        reconstructed_tensor_for_metrics = None
+        # Performance optimization: compute metrics only in eval mode
+        if not self.training:
+            original_tensor_for_metrics = None
+            reconstructed_tensor_for_metrics = None
+            current_device = None
 
-        if isinstance(input_data, torch.Tensor):
-            original_tensor_for_metrics = input_data.detach().cpu()
-        elif isinstance(input_data, Image.Image):
-            original_tensor_for_metrics = transforms.ToTensor()(input_data).cpu()
+            if isinstance(input_data, torch.Tensor):
+                original_tensor_for_metrics = input_data.detach()
+                current_device = input_data.device
+            elif isinstance(input_data, Image.Image):
+                original_tensor_for_metrics = transforms.ToTensor()(input_data)
+                if isinstance(reconstructed_data, torch.Tensor):
+                    current_device = reconstructed_data.device
+                    original_tensor_for_metrics = original_tensor_for_metrics.to(
+                        current_device
+                    )
 
-        if isinstance(reconstructed_data, torch.Tensor):
-            reconstructed_tensor_for_metrics = reconstructed_data.detach().cpu()
+            if isinstance(reconstructed_data, torch.Tensor):
+                reconstructed_tensor_for_metrics = reconstructed_data.detach()
+                current_device = reconstructed_data.device
 
-        if (
-            original_tensor_for_metrics is not None
-            and reconstructed_tensor_for_metrics is not None
-        ):
-            if original_tensor_for_metrics.ndim == 3:
-                original_tensor_for_metrics_batched = (
-                    original_tensor_for_metrics.unsqueeze(0)
-                )
-            else:
-                original_tensor_for_metrics_batched = original_tensor_for_metrics
-
-            if reconstructed_tensor_for_metrics.ndim == 3:
-                reconstructed_tensor_for_metrics_batched = (
-                    reconstructed_tensor_for_metrics.unsqueeze(0)
-                )
-            elif (
-                reconstructed_tensor_for_metrics.ndim == 4
-                and reconstructed_tensor_for_metrics.shape[0] == 1
+            if (
+                original_tensor_for_metrics is not None
+                and reconstructed_tensor_for_metrics is not None
             ):
-                reconstructed_tensor_for_metrics_batched = (
-                    reconstructed_tensor_for_metrics.squeeze(0)
+                if original_tensor_for_metrics.ndim == 3:
+                    original_tensor_for_metrics_batched = (
+                        original_tensor_for_metrics.unsqueeze(0)
+                    )
+                else:
+                    original_tensor_for_metrics_batched = original_tensor_for_metrics
+
+                if reconstructed_tensor_for_metrics.ndim == 3:
+                    reconstructed_tensor_for_metrics_batched = (
+                        reconstructed_tensor_for_metrics.unsqueeze(0)
+                    )
+                elif (
+                    reconstructed_tensor_for_metrics.ndim == 4
+                    and reconstructed_tensor_for_metrics.shape[0] == 1
+                ):
+                    reconstructed_tensor_for_metrics_batched = (
+                        reconstructed_tensor_for_metrics.squeeze(0)
+                    )
+                else:
+                    reconstructed_tensor_for_metrics_batched = (
+                        reconstructed_tensor_for_metrics
+                    )
+
+                original_tensor_for_metrics_batched = torch.clamp(
+                    original_tensor_for_metrics_batched, 0, 1
                 )
-            else:
-                reconstructed_tensor_for_metrics_batched = (
-                    reconstructed_tensor_for_metrics
+                reconstructed_tensor_for_metrics_batched = torch.clamp(
+                    reconstructed_tensor_for_metrics_batched, 0, 1
                 )
 
-            original_tensor_for_metrics_batched = torch.clamp(
-                original_tensor_for_metrics_batched, 0, 1
-            )
-            reconstructed_tensor_for_metrics_batched = torch.clamp(
-                reconstructed_tensor_for_metrics_batched, 0, 1
-            )
+                per_image_metrics = {
+                    "psnr": calculate_psnr(
+                        original_tensor_for_metrics_batched,
+                        reconstructed_tensor_for_metrics_batched,
+                        device=current_device,
+                    ),
+                    "ssim": calculate_ssim(
+                        original_tensor_for_metrics_batched,
+                        reconstructed_tensor_for_metrics_batched,
+                        device=current_device,
+                    ),
+                    "ms_ssim": calculate_ms_ssim(
+                        original_tensor_for_metrics_batched,
+                        reconstructed_tensor_for_metrics_batched,
+                        device=current_device,
+                    ),
+                    "lpips": calculate_lpips(
+                        original_tensor_for_metrics_batched,
+                        reconstructed_tensor_for_metrics_batched,
+                        device=current_device,
+                    ),
+                }
+                diagnostics.update(per_image_metrics)
 
-            per_image_metrics = {
-                "psnr": calculate_psnr(
-                    original_tensor_for_metrics_batched,
-                    reconstructed_tensor_for_metrics_batched,
-                ),
-                "ssim": calculate_ssim(
-                    original_tensor_for_metrics_batched,
-                    reconstructed_tensor_for_metrics_batched,
-                ),
-                "ms_ssim": calculate_ms_ssim(
-                    original_tensor_for_metrics_batched,
-                    reconstructed_tensor_for_metrics_batched,
-                ),
-                "lpips": calculate_lpips(
-                    original_tensor_for_metrics_batched,
-                    reconstructed_tensor_for_metrics_batched,
-                ),
-            }
-            diagnostics.update(per_image_metrics)
-
-            original_size_bytes = (
-                original_tensor_for_metrics_batched.element_size()
-                * original_tensor_for_metrics_batched.numel()
-            )
-            transmitted_size_bits = diagnostics["size_info"].get("total_bits", 0)
-            if transmitted_size_bits > 0:
-                diagnostics["compression_ratio"] = (
-                    original_size_bytes * 8 / transmitted_size_bits
+                original_size_bytes = (
+                    original_tensor_for_metrics_batched.element_size()
+                    * original_tensor_for_metrics_batched.numel()
                 )
-            else:
-                diagnostics["compression_ratio"] = float("inf")
+                transmitted_size_bits = diagnostics["size_info"].get("total_bits", 0)
+                if transmitted_size_bits > 0:
+                    diagnostics["compression_ratio"] = (
+                        original_size_bytes * 8 / transmitted_size_bits
+                    )
+                else:
+                    diagnostics["compression_ratio"] = float("inf")
 
-            self._fid_calculator.update_features(
-                original_tensor_for_metrics_batched, real=True
-            )
-            self._fid_calculator.update_features(
-                reconstructed_tensor_for_metrics_batched, real=False
-            )
+                # FID calculation - only if enabled to avoid expensive CPU transfers
+                if self.enable_fid and self._fid_calculator is not None:
+                    original_cpu = original_tensor_for_metrics_batched.cpu()
+                    reconstructed_cpu = reconstructed_tensor_for_metrics_batched.cpu()
+                    self._fid_calculator.update_features(original_cpu, real=True)
+                    self._fid_calculator.update_features(reconstructed_cpu, real=False)
 
-        self._statistics.append(diagnostics)
+            self._statistics.append(diagnostics)
+        else:
+            # Training mode: compute basic compression ratio only
+            if isinstance(input_data, torch.Tensor):
+                original_size_bytes = input_data.element_size() * input_data.numel()
+                transmitted_size_bits = diagnostics["size_info"].get("total_bits", 0)
+                if transmitted_size_bits > 0:
+                    diagnostics["compression_ratio"] = (
+                        original_size_bytes * 8 / transmitted_size_bits
+                    )
+                else:
+                    diagnostics["compression_ratio"] = float("inf")
 
         return reconstructed_data, diagnostics
 
