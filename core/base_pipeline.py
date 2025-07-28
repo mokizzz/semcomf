@@ -168,13 +168,14 @@ class BasePipeline(nn.Module):
 
         # Transmitter
         tx_start_time = time.time()
-        transmitted_representation, tx_timings = self.transmitter(input_data)
+        tx_representation, tx_timings = self.transmitter(input_data)
         diagnostics["timings"]["transmitter_total"] = time.time() - tx_start_time
         diagnostics["timings"].update({f"tx_{k}": v for k, v in tx_timings.items()})
+        diagnostics["tx_representation"] = tx_representation
 
         # Channel
         ch_start_time = time.time()
-        data_after_channel, size_info = self.channel(transmitted_representation)
+        data_after_channel, size_info = self.channel(tx_representation)
         diagnostics["timings"]["channel_total"] = time.time() - ch_start_time
         diagnostics["size_info"] = size_info
 
@@ -189,7 +190,7 @@ class BasePipeline(nn.Module):
 
         # Receiver
         rx_start_time = time.time()
-        reconstructed_data, rx_timings = self.receiver(data_after_channel)
+        rx_data, rx_timings = self.receiver(data_after_channel)
         diagnostics["timings"]["receiver_total"] = time.time() - rx_start_time
         diagnostics["timings"].update({f"rx_{k}": v for k, v in rx_timings.items()})
 
@@ -210,15 +211,15 @@ class BasePipeline(nn.Module):
                 current_device = input_data.device
             elif isinstance(input_data, Image.Image):
                 original_tensor_for_metrics = transforms.ToTensor()(input_data)
-                if isinstance(reconstructed_data, torch.Tensor):
-                    current_device = reconstructed_data.device
+                if isinstance(rx_data, torch.Tensor):
+                    current_device = rx_data.device
                     original_tensor_for_metrics = original_tensor_for_metrics.to(
                         current_device
                     )
 
-            if isinstance(reconstructed_data, torch.Tensor):
-                reconstructed_tensor_for_metrics = reconstructed_data.detach()
-                current_device = reconstructed_data.device
+            if isinstance(rx_data, torch.Tensor):
+                reconstructed_tensor_for_metrics = rx_data.detach()
+                current_device = rx_data.device
 
             if (
                 original_tensor_for_metrics is not None
@@ -310,7 +311,7 @@ class BasePipeline(nn.Module):
                 else:
                     diagnostics["compression_ratio"] = float("inf")
 
-        return reconstructed_data, diagnostics
+        return rx_data, diagnostics
 
     def to(self, *args, **kwargs):
         """Overrides nn.Module.to() to move all sub-modules to the specified device/dtype."""
