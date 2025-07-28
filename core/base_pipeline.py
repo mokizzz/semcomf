@@ -168,14 +168,18 @@ class BasePipeline(nn.Module):
 
         # Transmitter
         tx_start_time = time.time()
-        tx_representation, tx_timings = self.transmitter(input_data)
+        tx_output, tx_timings = self.transmitter(input_data)
         diagnostics["timings"]["transmitter_total"] = time.time() - tx_start_time
         diagnostics["timings"].update({f"tx_{k}": v for k, v in tx_timings.items()})
-        diagnostics["tx_representation"] = tx_representation
+        diagnostics["tx_representation"] = tx_output  # Store the full output for diagnostics
+
+        # Extract the payload for channel and receiver
+        # If 'payload' key exists, use it; otherwise, assume the whole output is the payload.
+        tx_payload = tx_output.get("payload", tx_output)
 
         # Channel
         ch_start_time = time.time()
-        data_after_channel, size_info = self.channel(tx_representation)
+        data_after_channel, size_info = self.channel(tx_payload)
         diagnostics["timings"]["channel_total"] = time.time() - ch_start_time
         diagnostics["size_info"] = size_info
 
