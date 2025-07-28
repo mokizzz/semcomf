@@ -153,7 +153,7 @@ class BasePipeline(nn.Module):
 
         Returns:
             A tuple containing:
-            - reconstructed_data: The final output from the receiver.
+            - rx_data: The final output from the receiver.
             - diagnostics: A dictionary containing timings, size_info, and intermediate data.
         """
         diagnostics = {"timings": {}, "size_info": {}}
@@ -203,7 +203,7 @@ class BasePipeline(nn.Module):
         # Performance optimization: compute metrics only in eval mode
         if not self.training:
             original_tensor_for_metrics = None
-            reconstructed_tensor_for_metrics = None
+            rx_tensor_for_metrics = None
             current_device = None
 
             if isinstance(input_data, torch.Tensor):
@@ -218,12 +218,12 @@ class BasePipeline(nn.Module):
                     )
 
             if isinstance(rx_data, torch.Tensor):
-                reconstructed_tensor_for_metrics = rx_data.detach()
+                rx_tensor_for_metrics = rx_data.detach()
                 current_device = rx_data.device
 
             if (
                 original_tensor_for_metrics is not None
-                and reconstructed_tensor_for_metrics is not None
+                and rx_tensor_for_metrics is not None
             ):
                 if original_tensor_for_metrics.ndim == 3:
                     original_tensor_for_metrics_batched = (
@@ -232,48 +232,42 @@ class BasePipeline(nn.Module):
                 else:
                     original_tensor_for_metrics_batched = original_tensor_for_metrics
 
-                if reconstructed_tensor_for_metrics.ndim == 3:
-                    reconstructed_tensor_for_metrics_batched = (
-                        reconstructed_tensor_for_metrics.unsqueeze(0)
-                    )
+                if rx_tensor_for_metrics.ndim == 3:
+                    rx_tensor_for_metrics_batched = rx_tensor_for_metrics.unsqueeze(0)
                 elif (
-                    reconstructed_tensor_for_metrics.ndim == 4
-                    and reconstructed_tensor_for_metrics.shape[0] == 1
+                    rx_tensor_for_metrics.ndim == 4
+                    and rx_tensor_for_metrics.shape[0] == 1
                 ):
-                    reconstructed_tensor_for_metrics_batched = (
-                        reconstructed_tensor_for_metrics.squeeze(0)
-                    )
+                    rx_tensor_for_metrics_batched = rx_tensor_for_metrics.squeeze(0)
                 else:
-                    reconstructed_tensor_for_metrics_batched = (
-                        reconstructed_tensor_for_metrics
-                    )
+                    rx_tensor_for_metrics_batched = rx_tensor_for_metrics
 
                 original_tensor_for_metrics_batched = torch.clamp(
                     original_tensor_for_metrics_batched, 0, 1
                 )
-                reconstructed_tensor_for_metrics_batched = torch.clamp(
-                    reconstructed_tensor_for_metrics_batched, 0, 1
+                rx_tensor_for_metrics_batched = torch.clamp(
+                    rx_tensor_for_metrics_batched, 0, 1
                 )
 
                 per_image_metrics = {
                     "psnr": calculate_psnr(
                         original_tensor_for_metrics_batched,
-                        reconstructed_tensor_for_metrics_batched,
+                        rx_tensor_for_metrics_batched,
                         device=current_device,
                     ),
                     "ssim": calculate_ssim(
                         original_tensor_for_metrics_batched,
-                        reconstructed_tensor_for_metrics_batched,
+                        rx_tensor_for_metrics_batched,
                         device=current_device,
                     ),
                     "ms_ssim": calculate_ms_ssim(
                         original_tensor_for_metrics_batched,
-                        reconstructed_tensor_for_metrics_batched,
+                        rx_tensor_for_metrics_batched,
                         device=current_device,
                     ),
                     "lpips": calculate_lpips(
                         original_tensor_for_metrics_batched,
-                        reconstructed_tensor_for_metrics_batched,
+                        rx_tensor_for_metrics_batched,
                         device=current_device,
                     ),
                 }
@@ -283,10 +277,10 @@ class BasePipeline(nn.Module):
                     original_tensor_for_metrics_batched.element_size()
                     * original_tensor_for_metrics_batched.numel()
                 )
-                transmitted_size_bits = diagnostics["size_info"].get("total_bits", 0)
-                if transmitted_size_bits > 0:
+                tx_size_bits = diagnostics["size_info"].get("total_bits", 0)
+                if tx_size_bits > 0:
                     diagnostics["compression_ratio"] = (
-                        original_size_bytes * 8 / transmitted_size_bits
+                        original_size_bytes * 8 / tx_size_bits
                     )
                 else:
                     diagnostics["compression_ratio"] = float("inf")
@@ -294,19 +288,19 @@ class BasePipeline(nn.Module):
                 # FID calculation - only if enabled to avoid expensive CPU transfers
                 if self.enable_fid and self._fid_calculator is not None:
                     original_cpu = original_tensor_for_metrics_batched.cpu()
-                    reconstructed_cpu = reconstructed_tensor_for_metrics_batched.cpu()
+                    rx_cpu = rx_tensor_for_metrics_batched.cpu()
                     self._fid_calculator.update_features(original_cpu, real=True)
-                    self._fid_calculator.update_features(reconstructed_cpu, real=False)
+                    self._fid_calculator.update_features(rx_cpu, real=False)
 
             self._statistics.append(diagnostics)
         else:
             # Training mode: compute basic compression ratio only
             if isinstance(input_data, torch.Tensor):
                 original_size_bytes = input_data.element_size() * input_data.numel()
-                transmitted_size_bits = diagnostics["size_info"].get("total_bits", 0)
-                if transmitted_size_bits > 0:
+                tx_size_bits = diagnostics["size_info"].get("total_bits", 0)
+                if tx_size_bits > 0:
                     diagnostics["compression_ratio"] = (
-                        original_size_bytes * 8 / transmitted_size_bits
+                        original_size_bytes * 8 / tx_size_bits
                     )
                 else:
                     diagnostics["compression_ratio"] = float("inf")
