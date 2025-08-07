@@ -68,6 +68,7 @@ class BasePipeline(nn.Module):
             "ms_ssim": 0.0,
             "lpips": 0.0,
             "compression_ratio": 0.0,
+            "bpp": 0.0,
         }
 
         for stats in self._statistics:
@@ -80,6 +81,7 @@ class BasePipeline(nn.Module):
             avg_metrics["ms_ssim"] += stats.get("ms_ssim", 0.0)
             avg_metrics["lpips"] += stats.get("lpips", 0.0)
             avg_metrics["compression_ratio"] += stats.get("compression_ratio", 0.0)
+            avg_metrics["bpp"] += stats.get("bpp", 0.0)
 
         for k in avg_timings:
             avg_timings[k] /= total_images
@@ -94,14 +96,15 @@ class BasePipeline(nn.Module):
 
         logger.info("\nAverage Size Info:")
         for k, v in avg_size_info.items():
-            logger.info(f"  {k}: {v:.2f}")
+            logger.info(f"  {k}: {v:.4f}")
 
         logger.info("\nAverage Metrics:")
         logger.info(f"  PSNR: {avg_metrics['psnr']:.4f}")
         logger.info(f"  SSIM: {avg_metrics['ssim']:.4f}")
         logger.info(f"  MS-SSIM: {avg_metrics['ms_ssim']:.4f}")
         logger.info(f"  LPIPS: {avg_metrics['lpips']:.4f}")
-        logger.info(f"  Compression Ratio: {avg_metrics['compression_ratio']:.2f}")
+        logger.info(f"  Compression Ratio: {avg_metrics['compression_ratio']:.4f}")
+        logger.info(f"  BPP: {avg_metrics['bpp']:.4f}")
 
         if self.enable_fid and self._fid_calculator is not None:
             logger.info("\nCalculating FID...")
@@ -144,6 +147,82 @@ class BasePipeline(nn.Module):
                 total_elements += self._calculate_total_elements_numel(value)
         return total_elements
 
+    def _calculate_compression_metrics(
+        self,
+        input_data: Any,
+        data_after_channel: Any,
+        diagnostics: Dict[str, Any],
+        original_tensor_for_metrics_batched: torch.Tensor = None,
+    ) -> None:
+        """Calculate compression metrics: CBR, compression ratio, and BPP."""
+        size_info = diagnostics.get("size_info", {})
+        tx_size_bits = size_info.get("total_bits", 0)
+
+        # Prepare tensors for calculation
+        orig_tensor_for_calculation = None
+        if isinstance(input_data, torch.Tensor):
+            orig_tensor_for_calculation = input_data.detach().cpu()
+        elif isinstance(input_data, Image.Image):
+            orig_tensor_for_calculation = transforms.ToTensor()(input_data).cpu()
+        elif original_tensor_for_metrics_batched is not None:
+            orig_tensor_for_calculation = (
+                original_tensor_for_metrics_batched.detach().cpu()
+            )
+
+        if orig_tensor_for_calculation is None:
+            return
+
+        # Calculate original size
+        original_size_bytes = (
+            orig_tensor_for_calculation.element_size()
+            * orig_tensor_for_calculation.numel()
+        )
+
+        # CBR calculation (only in eval mode)
+        if not self.training:
+            n = orig_tensor_for_calculation.numel()
+            k = self._calculate_total_elements_numel(data_after_channel) / 2
+            if n > 0:
+                diagnostics["size_info"]["cbr"] = k / n
+            else:
+                diagnostics["size_info"]["cbr"] = float("inf")
+
+        # Compression ratio calculation
+        if tx_size_bits > 0:
+            diagnostics["compression_ratio"] = original_size_bytes * 8 / tx_size_bits
+        else:
+            diagnostics["compression_ratio"] = float("inf")
+
+        # BPP (Bits Per Pixel) calculation
+        if tx_size_bits > 0 and len(orig_tensor_for_calculation.shape) >= 2:
+            # For images: N = W * H (total pixels)
+            # Assume format is [C, H, W] or [B, C, H, W]
+            if orig_tensor_for_calculation.ndim == 3:  # [C, H, W]
+                height, width = (
+                    orig_tensor_for_calculation.shape[1],
+                    orig_tensor_for_calculation.shape[2],
+                )
+            elif orig_tensor_for_calculation.ndim == 4:  # [B, C, H, W]
+                height, width = (
+                    orig_tensor_for_calculation.shape[2],
+                    orig_tensor_for_calculation.shape[3],
+                )
+            elif orig_tensor_for_calculation.ndim == 2:  # [H, W] grayscale
+                height, width = (
+                    orig_tensor_for_calculation.shape[0],
+                    orig_tensor_for_calculation.shape[1],
+                )
+            else:
+                height = width = 0
+
+            total_pixels = height * width
+            if total_pixels > 0:
+                diagnostics["bpp"] = tx_size_bits / total_pixels
+            else:
+                diagnostics["bpp"] = float("inf")
+        else:
+            diagnostics["bpp"] = 0.0
+
     def forward(self, input_data: Any) -> tuple[Any, dict]:
         """
         Passes input_data through the full semantic communication pipeline.
@@ -158,20 +237,14 @@ class BasePipeline(nn.Module):
         """
         diagnostics = {"timings": {}, "size_info": {}}
 
-        # CBR preparation - only in eval mode
-        orig_tensor_for_cbr = None
-        if not self.training:
-            if isinstance(input_data, torch.Tensor):
-                orig_tensor_for_cbr = input_data.detach().cpu()
-            elif isinstance(input_data, Image.Image):
-                orig_tensor_for_cbr = transforms.ToTensor()(input_data).cpu()
-
         # Transmitter
         tx_start_time = time.time()
         tx_output, tx_timings = self.transmitter(input_data)
         diagnostics["timings"]["transmitter_total"] = time.time() - tx_start_time
         diagnostics["timings"].update({f"tx_{k}": v for k, v in tx_timings.items()})
-        diagnostics["tx_representation"] = tx_output  # Store the full output for diagnostics
+        diagnostics["tx_representation"] = (
+            tx_output  # Store the full output for diagnostics
+        )
 
         # Extract the payload for channel and receiver
         # If 'payload' key exists, use it; otherwise, assume the whole output is the payload.
@@ -182,15 +255,6 @@ class BasePipeline(nn.Module):
         data_after_channel, size_info = self.channel(tx_payload)
         diagnostics["timings"]["channel_total"] = time.time() - ch_start_time
         diagnostics["size_info"] = size_info
-
-        # CBR calculation - only in eval mode
-        if orig_tensor_for_cbr is not None:
-            n = orig_tensor_for_cbr.numel()
-            k = self._calculate_total_elements_numel(data_after_channel) / 2
-            if n > 0:
-                diagnostics["size_info"]["cbr"] = k / n
-            else:
-                diagnostics["size_info"]["cbr"] = float("inf")
 
         # Receiver
         rx_start_time = time.time()
@@ -277,17 +341,13 @@ class BasePipeline(nn.Module):
                 }
                 diagnostics.update(per_image_metrics)
 
-                original_size_bytes = (
-                    original_tensor_for_metrics_batched.element_size()
-                    * original_tensor_for_metrics_batched.numel()
+                # Calculate compression metrics (CBR, compression ratio, BPP)
+                self._calculate_compression_metrics(
+                    input_data,
+                    data_after_channel,
+                    diagnostics,
+                    original_tensor_for_metrics_batched,
                 )
-                tx_size_bits = diagnostics["size_info"].get("total_bits", 0)
-                if tx_size_bits > 0:
-                    diagnostics["compression_ratio"] = (
-                        original_size_bytes * 8 / tx_size_bits
-                    )
-                else:
-                    diagnostics["compression_ratio"] = float("inf")
 
                 # FID calculation - only if enabled to avoid expensive CPU transfers
                 if self.enable_fid and self._fid_calculator is not None:
@@ -298,16 +358,10 @@ class BasePipeline(nn.Module):
 
             self._statistics.append(diagnostics)
         else:
-            # Training mode: compute basic compression ratio only
-            if isinstance(input_data, torch.Tensor):
-                original_size_bytes = input_data.element_size() * input_data.numel()
-                tx_size_bits = diagnostics["size_info"].get("total_bits", 0)
-                if tx_size_bits > 0:
-                    diagnostics["compression_ratio"] = (
-                        original_size_bytes * 8 / tx_size_bits
-                    )
-                else:
-                    diagnostics["compression_ratio"] = float("inf")
+            # Training mode: compute basic compression metrics
+            self._calculate_compression_metrics(
+                input_data, data_after_channel, diagnostics
+            )
 
         return rx_data, diagnostics
 
