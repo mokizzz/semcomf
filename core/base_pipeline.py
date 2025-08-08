@@ -172,13 +172,22 @@ class BasePipeline(nn.Module):
         if orig_tensor_for_calculation is None:
             return
 
-        # Calculate original size
-        original_size_bytes = (
-            orig_tensor_for_calculation.element_size()
-            * orig_tensor_for_calculation.numel()
-        )
+        # Calculate original size based on a standard 8-bit per channel representation (e.g., 24 BPP for RGB)
+        if orig_tensor_for_calculation.ndim == 4:  # [B, C, H, W]
+            num_channels = orig_tensor_for_calculation.shape[1]
+            original_size_bytes = (
+                orig_tensor_for_calculation.shape[0]  # Batch
+                * orig_tensor_for_calculation.shape[2]  # Height
+                * orig_tensor_for_calculation.shape[3]  # Width
+                * num_channels  # Channels
+            )  # This assumes 1 byte per channel value (uint8), which is the standard baseline.
+        else:
+            original_size_bytes = (
+                orig_tensor_for_calculation.element_size()
+                * orig_tensor_for_calculation.numel()
+            )
 
-        # CBR calculation (only in eval mode)
+        # CBR (Channel Bandwidth Ratio) calculation (only in eval mode)
         if not self.training:
             n = orig_tensor_for_calculation.numel()
             k = self._calculate_total_elements_numel(data_after_channel) / 2
@@ -195,14 +204,16 @@ class BasePipeline(nn.Module):
 
         # BPP (Bits Per Pixel) calculation
         if tx_size_bits > 0 and len(orig_tensor_for_calculation.shape) >= 2:
-            # For images: N = W * H (total pixels)
+            # For images: N = B * W * H (total pixels)
             # Assume format is [C, H, W] or [B, C, H, W]
+            batch_size = 1
             if orig_tensor_for_calculation.ndim == 3:  # [C, H, W]
                 height, width = (
                     orig_tensor_for_calculation.shape[1],
                     orig_tensor_for_calculation.shape[2],
                 )
             elif orig_tensor_for_calculation.ndim == 4:  # [B, C, H, W]
+                batch_size = orig_tensor_for_calculation.shape[0]
                 height, width = (
                     orig_tensor_for_calculation.shape[2],
                     orig_tensor_for_calculation.shape[3],
@@ -215,7 +226,7 @@ class BasePipeline(nn.Module):
             else:
                 height = width = 0
 
-            total_pixels = height * width
+            total_pixels = batch_size * height * width
             if total_pixels > 0:
                 diagnostics["bpp"] = tx_size_bits / total_pixels
             else:
